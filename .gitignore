@@ -1,0 +1,6 @@
+data/
+*.db
+*.db-*
+/token-monitor-server
+/dist/
+.DS_Store

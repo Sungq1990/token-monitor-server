@@ -1,0 +1,6 @@
+.git
+data
+dist
+*.db
+*.db-*
+README.md

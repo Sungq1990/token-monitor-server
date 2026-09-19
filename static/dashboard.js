@@ -165,7 +165,7 @@ document.querySelector("#devices").addEventListener("click", async e=>{
   if(!confirm(`确定删除设备「${devLabel(id)}」及其上报的所有用量数据？此操作不可恢复。`)) return;
   b.disabled = true;
   try{
-    const res = await fetch("/api/devices/"+encodeURIComponent(id),{method:"DELETE"});
+    const res = await fetch("api/devices/"+encodeURIComponent(id),{method:"DELETE"});
     if(!res.ok) throw new Error("HTTP "+res.status);
     if(device===id){ device=""; document.getElementById("device").value=""; }
     await initDevices(); refresh();
@@ -187,8 +187,8 @@ async function refresh(){
   button.disabled=true;
   try{
     const [rangeData,agents,models,devStats,devList]=await Promise.all([
-      jget("/api/stats/range?"+q),jget("/api/stats/agents?"+q),jget("/api/stats/models?"+q),
-      jget("/api/stats/devices?"+qd),jget("/api/devices")]);
+      jget("api/stats/range?"+q),jget("api/stats/agents?"+q),jget("api/stats/models?"+q),
+      jget("api/stats/devices?"+qd),jget("api/devices")]);
     if(id!==refreshId)return;
     const t=rangeData.totals;
     const metrics={input:t.input_tokens,output:t.output_tokens,cache:t.cache_read_tokens+t.cache_write_tokens,total:t.total_tokens,cost:t.cost,req:t.requests};
@@ -224,7 +224,7 @@ async function refresh(){
 
 async function initDevices(){
   try{
-    const data=await jget("/api/devices");
+    const data=await jget("api/devices");
     const devices = data.devices||[];
     deviceNames = Object.fromEntries(devices.map(d=>[d.device_id, d.name||d.hostname||d.device_id]));
     const sel=document.getElementById("device");
@@ -234,7 +234,7 @@ async function initDevices(){
     // Agent 下拉：所有设备配置过的 agent ∪ 有数据的 agent
     const names = new Set();
     devices.forEach(d=>(Array.isArray(d.agents)?d.agents:[]).forEach(a=>a.agent&&names.add(a.agent)));
-    try{ const a = await jget("/api/stats/agents?start=1970-01-01"); (a.agents||[]).forEach(r=>r.key&&names.add(r.key)); }catch(_){}
+    try{ const a = await jget("api/stats/agents?start=1970-01-01"); (a.agents||[]).forEach(r=>r.key&&names.add(r.key)); }catch(_){}
     const asel=document.getElementById("agent");
     asel.innerHTML='<option value="">全部 Agent</option>'+[...names].sort().map(a=>`<option value="${esc(a)}">${esc(AGENT_LABEL[a]||a)}</option>`).join("");
     if(agent&&!names.has(agent))agent="";

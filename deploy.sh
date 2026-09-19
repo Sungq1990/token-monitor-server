@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Token Monitor 服务端部署/升级脚本（无需 docker compose）
-# 用法：先 docker load -i token-monitor-server.tar，然后把本脚本和数据目录放同级，bash deploy.sh
+# 用法：先 docker load -i token-monitor-server.tar，bash deploy.sh
+# 数据目录默认 /mnt/data_mmcblk1p4/docker_data/token_monitor（可用 DATA_DIR=xxx 覆盖）
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DATA_DIR="${DATA_DIR:-$PWD/data}"
+DATA_DIR="${DATA_DIR:-/mnt/data_mmcblk1p4/docker_data/token_monitor}"
 PORT="${PORT:-8765}"
 
 mkdir -p "$DATA_DIR"

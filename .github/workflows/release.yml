@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux/arm64   # iStoreOS 主机
+            name: arm64
+          - platform: linux/amd64
+            name: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      # Dockerfile 构建阶段在原生架构上交叉编译（TARGETARCH），运行阶段无 RUN，无需 QEMU
+      - name: Build and export tar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          tags: token-monitor-server:latest
+          outputs: type=docker,dest=token-monitor-server-${{ matrix.name }}.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: token-monitor-server-${{ matrix.name }}
+          path: token-monitor-server-${{ matrix.name }}.tar
+
+  release:
+    needs: [build-image]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            token-monitor-server-arm64.tar
+            token-monitor-server-amd64.tar

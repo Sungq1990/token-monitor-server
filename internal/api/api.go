@@ -16,7 +16,7 @@ import (
 	"token-monitor-server/internal/store"
 )
 
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 var (
 	agentRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$`)
@@ -45,7 +45,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	// 面板静态资源按版本发布（embed 内嵌），缓存一天；首页保持 no-cache 以便升级即见
+	if strings.HasPrefix(r.URL.Path, "/static/") {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+	// gzip 压缩响应（nginx 未开 gzip 时由后端兜底），家宽上行下 JSON/静态资源体积压缩 ~70-90%
+	gzipHandler(s.mux).ServeHTTP(w, r)
 	if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet {
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	}

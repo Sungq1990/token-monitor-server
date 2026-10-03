@@ -61,6 +61,8 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/v1/devices/{id}/config", s.handlePutDeviceConfig)
 	m.HandleFunc("GET /api/v1/pricing", s.handleGetPricing)
 	m.HandleFunc("PUT /api/v1/pricing", s.handlePutPricing)
+	m.HandleFunc("DELETE /api/v1/pricing", s.handleDeletePricing)
+	m.HandleFunc("POST /api/v1/pricing/prune", s.handlePrunePricing)
 
 	// 面板接口
 	m.HandleFunc("GET /api/health", s.handleHealth)
@@ -69,6 +71,8 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/devices/{id}", s.handleDeleteDevice)
 	m.HandleFunc("GET /api/pricing", s.handleGetPricing)
 	m.HandleFunc("POST /api/pricing", s.handlePutPricing)
+	m.HandleFunc("DELETE /api/pricing", s.handleDeletePricing)
+	m.HandleFunc("POST /api/pricing/prune", s.handlePrunePricing)
 	m.HandleFunc("GET /api/stats/today", s.handleToday)
 	m.HandleFunc("GET /api/stats/range", s.handleRange)
 	m.HandleFunc("GET /api/stats/agents", s.handleAgents)
@@ -309,6 +313,51 @@ func (s *Server) handlePutPricing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"saved": len(body.Items)})
+}
+
+// handleDeletePricing 软删除一条模型（隐藏出列表；再次上报时自动恢复）
+func (s *Server) handleDeletePricing(w http.ResponseWriter, r *http.Request) {
+	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
+	if !agentRe.MatchString(agent) || model == "" || len(model) > 128 {
+		writeErr(w, 422, "agent/model 非法")
+		return
+	}
+	ctx, cancel := ctxOf(r)
+	defer cancel()
+	if err := s.st.DeletePricing(ctx, agent, model); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": model})
+}
+
+// handlePrunePricing 按设备最近 N 天实际用过的模型重建显示列表（其余隐藏）
+func (s *Server) handlePrunePricing(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DeviceID string `json:"device_id"`
+		Days     int    `json:"days"`
+	}
+	if err := readJSON(w, r, &body, 1<<20); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	body.DeviceID = strings.TrimSpace(body.DeviceID)
+	if !deviceRe.MatchString(body.DeviceID) {
+		writeErr(w, 422, "device_id 非法")
+		return
+	}
+	if body.Days <= 0 {
+		body.Days = 30
+	}
+	ctx, cancel := ctxOf(r)
+	defer cancel()
+	n, err := s.st.PrunePricing(ctx, body.DeviceID, body.Days)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"hidden": n, "days": body.Days})
 }
 
 // ---- 客户端配置存取（配置以服务端为准，本地文件只是缓存） ----

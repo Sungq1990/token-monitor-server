@@ -112,6 +112,13 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate config_json: %w", err)
 		}
 	}
+	// 旧库升级：model_pricing 增加 hidden 软删除标记（删除的模型再次上报时自动恢复为 0）
+	if _, err := db.Exec(`ALTER TABLE model_pricing ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate model_pricing.hidden: %w", err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 

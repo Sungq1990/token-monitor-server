@@ -119,6 +119,20 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 	defer tx.Rollback()
 
 	for _, b := range req.Batches {
+		// ---- 模型可见性：本批出现过的模型自动恢复显示（被删过的模型再被实际使用就会回来）。
+		// 只更新已有行，不给新模型建行——新模型是否"已配置"仍由用户设置单价决定。
+		seen := map[string]bool{}
+		for _, it := range b.Items {
+			if it.Model != "" && !seen[it.Model] {
+				seen[it.Model] = true
+			}
+		}
+		for m := range seen {
+			if _, err := tx.ExecContext(ctx, `UPDATE model_pricing SET hidden = 0 WHERE agent = ? AND model = ?`, req.Agent, m); err != nil {
+				return out, fmt.Errorf("model unhide: %w", err)
+			}
+		}
+
 		// ---- 会话元信息合并 ----
 		type sess struct {
 			title, model  string
@@ -284,8 +298,75 @@ ON CONFLICT(agent, model) DO UPDATE SET
 	return tx.Commit()
 }
 
-// ListPricing 返回「出现过的 agent+model」∪「已配置单价」，供设置页展示。
+// DeletePricing 隐藏一条模型（软删除）：从单价列表移除，历史数据与其已存单价保留；
+// 该模型再次被实际上报时由 ingest 自动恢复显示。
+func (s *Store) DeletePricing(ctx context.Context, agent, model string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO model_pricing (agent, model, hidden) VALUES (?, ?, 1)
+ON CONFLICT(agent, model) DO UPDATE SET
+  hidden = 1, updated_at = datetime('now','localtime')`, agent, model)
+	return err
+}
+
+// PrunePricing 按「设备最近 days 天实际用过的模型」重建显示列表：
+// 窗口内用过的保证可见，没用过的隐藏（已设置的单价保留，只是不再展示）。
+// 返回本次隐藏的模型数。
+func (s *Store) PrunePricing(ctx context.Context, deviceID string, days int) (int64, error) {
+	if days <= 0 {
+		days = 30
+	}
+	if days > 3650 {
+		days = 3650
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	// 窗口内用过的：恢复可见（只更新已有行，不给新模型建"已配置"记录，与 ingest 的 unhide 一致）
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE model_pricing SET hidden = 0
+WHERE hidden = 1 AND EXISTS (
+  SELECT 1 FROM token_usage t
+  WHERE t.device_id = ? AND t.agent = model_pricing.agent AND t.model = model_pricing.model
+    AND t.occurred_at IS NOT NULL AND t.occurred_at >= datetime('now', '-%d days', 'localtime'))`, days), deviceID); err != nil {
+		return 0, err
+	}
+	// 窗口内没用过的：隐藏
+	res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+INSERT INTO model_pricing (agent, model, hidden)
+SELECT agent, model, 1 FROM token_usage
+WHERE device_id = ? AND (occurred_at IS NULL OR occurred_at < datetime('now', '-%d days', 'localtime'))
+  AND model IS NOT NULL AND model <> ''
+GROUP BY agent, model
+ON CONFLICT(agent, model) DO UPDATE SET hidden = 1`, days), deviceID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ListPricing 返回「出现过的 agent+model」∪「已配置单价」（不含被隐藏/删除的），供设置页展示。
 func (s *Store) ListPricing(ctx context.Context, deviceID string) ([]PricingItem, error) {
+	hidden := map[string]bool{}
+	hrows, err := s.db.QueryContext(ctx, `SELECT agent, model FROM model_pricing WHERE hidden = 1`)
+	if err != nil {
+		return nil, err
+	}
+	for hrows.Next() {
+		var a, m string
+		if err := hrows.Scan(&a, &m); err != nil {
+			hrows.Close()
+			return nil, err
+		}
+		hidden[a+"\x00"+m] = true
+	}
+	hrows.Close()
+
 	byKey := map[string]*PricingItem{}
 	var keys []string
 	q := `SELECT agent, model, COALESCE(MAX(provider),'') FROM token_usage WHERE model IS NOT NULL AND model <> ''`
@@ -306,12 +387,15 @@ func (s *Store) ListPricing(ctx context.Context, deviceID string) ([]PricingItem
 			return nil, err
 		}
 		k := a + "\x00" + m
+		if hidden[k] {
+			continue
+		}
 		byKey[k] = &PricingItem{Agent: a, Model: m, Provider: p}
 		keys = append(keys, k)
 	}
 	rows.Close()
 
-	rows, err = s.db.QueryContext(ctx, `SELECT agent, model, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, updated_by FROM model_pricing`)
+	rows, err = s.db.QueryContext(ctx, `SELECT agent, model, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, updated_by FROM model_pricing WHERE hidden = 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -321,8 +405,11 @@ func (s *Store) ListPricing(ctx context.Context, deviceID string) ([]PricingItem
 		if err := rows.Scan(&it.Agent, &it.Model, &it.InputPerM, &it.OutputPerM, &it.CacheReadPerM, &it.CacheWritePerM, &it.UpdatedBy); err != nil {
 			return nil, err
 		}
-		it.Configured = true
+		it.Configured = it.InputPerM != 0 || it.OutputPerM != 0 || it.CacheReadPerM != 0 || it.CacheWritePerM != 0 || it.UpdatedBy != ""
 		k := it.Agent + "\x00" + it.Model
+		if hidden[k] {
+			continue
+		}
 		if cur, ok := byKey[k]; ok {
 			it.Provider = cur.Provider
 			*cur = it
